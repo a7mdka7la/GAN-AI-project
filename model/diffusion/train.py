@@ -30,6 +30,7 @@ def train(
     cond_dropout_p: float = 0.1,
     guidance_w: float = 2.0,
     ddim_steps_val: int = 20,
+    grad_clip: float = 1.0,
     val_n_samples: int = 4000,
     device: str = "cuda",
     seed: int = 42,
@@ -65,6 +66,7 @@ def train(
             )
             opt.zero_grad(set_to_none=True)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             opt.step()
             running += loss.item()
             n_batches += 1

@@ -37,6 +37,7 @@ def train(
     hidden: int = 256,
     beta_final: float = 0.1,
     warmup_epochs: int = 5,
+    grad_clip: float = 1.0,
     val_n_samples: int = 4000,
     device: str = "cuda",
     seed: int = 42,
@@ -74,6 +75,7 @@ def train(
             loss = nll + beta * kl
             opt.zero_grad(set_to_none=True)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             opt.step()
 
             running_nll += nll.item()

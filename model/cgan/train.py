@@ -49,6 +49,7 @@ def train(
     hidden: int = 256,
     tau_start: float = 1.0,
     tau_end: float = 0.3,
+    grad_clip: float = 1.0,
     val_n_samples: int = 4000,
     device: str = "cuda",
     seed: int = 42,
@@ -106,6 +107,7 @@ def train(
             d_loss = d_adv + aux_weight * d_aux
             opt_d.zero_grad(set_to_none=True)
             d_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.D.parameters(), grad_clip)
             opt_d.step()
 
             # ---- generator step ----------------------------------------
@@ -130,6 +132,7 @@ def train(
             g_loss = g_adv + aux_weight * g_aux
             opt_g.zero_grad(set_to_none=True)
             g_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.G.parameters(), grad_clip)
             opt_g.step()
 
             running_d += d_loss.item()

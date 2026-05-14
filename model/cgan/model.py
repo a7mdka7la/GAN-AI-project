@@ -66,21 +66,36 @@ class Generator(nn.Module):
         return self.head_day(h), self.head_yd(h)
 
 
+def _sn(layer: nn.Module) -> nn.Module:
+    """Wrap a Linear layer in spectral normalization.
+
+    Spectral norm bounds the largest singular value of the weight matrix to 1,
+    which keeps the discriminator 1-Lipschitz and prevents the exploding
+    gradients that turn the generator's weights into NaN within a few steps.
+    """
+    return nn.utils.parametrizations.spectral_norm(layer)
+
+
 class Discriminator(nn.Module):
-    """``(x_day [B,31], x_yd [B,10], c) -> (rf [B], aux_dow, aux_mon, aux_leap, aux_dec)``."""
+    """``(x_day [B,31], x_yd [B,10], c) -> (rf [B], aux_dow, aux_mon, aux_leap, aux_dec)``.
+
+    Every Linear in the trunk + the real/fake head is spectral-normalised. The
+    auxiliary classification heads do NOT need spectral norm because they're
+    only optimised on real data — they don't feed back into the generator.
+    """
 
     def __init__(self, cond_dim: int = 64, hidden: int = 256) -> None:
         super().__init__()
         self.cond_encoder = ConditionEncoder(dim=cond_dim)
         self.trunk = nn.Sequential(
-            nn.Linear(N_DAY + N_YEAR_DIGIT + cond_dim, hidden),
+            _sn(nn.Linear(N_DAY + N_YEAR_DIGIT + cond_dim, hidden)),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(hidden, hidden),
+            _sn(nn.Linear(hidden, hidden)),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(hidden, hidden),
+            _sn(nn.Linear(hidden, hidden)),
             nn.LeakyReLU(0.2, inplace=True),
         )
-        self.head_rf = nn.Linear(hidden, 1)
+        self.head_rf = _sn(nn.Linear(hidden, 1))
         self.head_dow = nn.Linear(hidden, N_DOW)
         self.head_mon = nn.Linear(hidden, N_MONTH)
         self.head_leap = nn.Linear(hidden, N_LEAP)

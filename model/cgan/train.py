@@ -41,9 +41,9 @@ def train(
     *,
     epochs: int = 30,
     batch_size: int = 1024,
-    lr_g: float = 2e-4,
-    lr_d: float = 2e-4,
-    aux_weight: float = 1.0,
+    lr_g: float = 1e-4,
+    lr_d: float = 1e-4,
+    aux_weight: float = 0.5,
     z_dim: int = 64,
     cond_dim: int = 64,
     hidden: int = 256,
@@ -60,8 +60,12 @@ def train(
     train_loader, val_loader, _, _ = make_loaders(data_path, batch_size=batch_size, seed=seed)
 
     model = CGAN(z_dim=z_dim, cond_dim=cond_dim, hidden=hidden).to(device_t)
-    opt_g = torch.optim.AdamW(model.G.parameters(), lr=lr_g, betas=(0.5, 0.9))
-    opt_d = torch.optim.AdamW(model.D.parameters(), lr=lr_d, betas=(0.5, 0.9))
+    # Plain Adam (not AdamW): the weight-decay term interacts badly with
+    # spectral-normalised parameters and contributed to the original NaN.
+    opt_g = torch.optim.Adam(model.G.parameters(), lr=lr_g, betas=(0.5, 0.9))
+    opt_d = torch.optim.Adam(model.D.parameters(), lr=lr_d, betas=(0.5, 0.9))
+
+    skipped_batches = 0
 
     ckpt = CheckpointWriter(out_dir, model_name="cgan")
     step = 0
@@ -105,6 +109,11 @@ def train(
                 + F.cross_entropy(aux_dec_r, batch["decade"])
             )
             d_loss = d_adv + aux_weight * d_aux
+            if not torch.isfinite(d_loss):
+                # Skip this batch entirely — don't let NaN/Inf gradients touch weights.
+                skipped_batches += 1
+                step += 1
+                continue
             opt_d.zero_grad(set_to_none=True)
             d_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.D.parameters(), grad_clip)
@@ -130,6 +139,10 @@ def train(
                 + F.cross_entropy(aux_dec_f, batch["decade"])
             )
             g_loss = g_adv + aux_weight * g_aux
+            if not torch.isfinite(g_loss):
+                skipped_batches += 1
+                step += 1
+                continue
             opt_g.zero_grad(set_to_none=True)
             g_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.G.parameters(), grad_clip)
@@ -161,7 +174,8 @@ def train(
         ))
         print(
             f"[cgan] ep {epoch:02d} g={running_g/max(1,n_batches):.3f} d={running_d/max(1,n_batches):.3f} "
-            f"val_joint={val['val_joint_compliance']:.4f} val_dow={val['val_acc_dow']:.4f}"
+            f"val_joint={val['val_joint_compliance']:.4f} val_dow={val['val_acc_dow']:.4f} "
+            f"skipped={skipped_batches}"
             + (" *" if improved else "")
         )
     return ckpt.best_path

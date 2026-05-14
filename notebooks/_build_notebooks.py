@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 NB_DIR = Path(__file__).resolve().parent
 
-GITHUB_PLACEHOLDER = "https://github.com/<your-user>/<your-repo>.git"
+GITHUB_PLACEHOLDER = "https://github.com/a7mdka7la/GAN-AI-project.git"
 
 
 def code(src: str) -> dict:
@@ -35,7 +35,7 @@ def bootstrap_cell() -> dict:
     return code(
         f"""# Colab bootstrap: clone the repo if we're on Colab, set the cwd.
 import os, sys, subprocess, pathlib
-REPO_URL = {GITHUB_PLACEHOLDER!r}  # <-- edit to point at your private repo
+REPO_URL = {GITHUB_PLACEHOLDER!r}
 REPO_DIR = pathlib.Path("/content/Assignment2")
 if "COLAB_GPU" in os.environ or "COLAB_RELEASE_TAG" in os.environ:
     if not REPO_DIR.exists():

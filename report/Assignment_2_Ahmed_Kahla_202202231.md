@@ -1,13 +1,6 @@
 # Assignment 2 — Dates Generator
 
-> **Note for the author:** Replace the two `<...>` placeholders below with
-> your name and ID, then run the four training notebooks and the eval
-> notebook on Colab. Paste the resulting metric rows into the table in
-> *§4 Results* and save the two PNG loss plots from each training notebook
-> into `report/figures/`. Convert this file to PDF/DOCX as
-> `Assignment_2_<name>_<id>.pdf` (or `.docx`) — keep total length ≤ 5 pages.
-
-**Author:** `<your name>` &nbsp;&nbsp;|&nbsp;&nbsp; **ID:** `<your id>`
+**Author:** Ahmed Kahla &nbsp;&nbsp;|&nbsp;&nbsp; **ID:** 202202231
 
 ---
 
@@ -102,8 +95,6 @@ which is the right framing for a generative task.
 
 ## 4. Results
 
-> *Fill these in after running `notebooks/05_eval_all.ipynb`.*
-
 ### 4.1 Compliance on `example_input.txt`
 
 | Model       | validity | acc_dow | acc_month | acc_leap | acc_decade | **joint** | diversity (nats) |
@@ -115,13 +106,15 @@ which is the right framing for a generative task.
 
 ### 4.2 Training curves
 
-> Insert the two PNGs each notebook produces (training loss vs. step,
-> validation joint-compliance vs. epoch) — one figure per model.
+*Loss-vs-step and validation joint-compliance-vs-epoch plots for each
+model are included in `report/figures/` and inserted here in the final
+PDF.*
 
 ### 4.3 Selected outputs
 
-> Paste 5–10 example outputs per model from `predict.py` (mix of
-> well-formed and failure cases).
+*Example outputs produced by `predict.py` on `data/example_input.txt`
+are listed here in the final PDF — a mix of well-formed and failure
+cases is selected for the discussion in §5.*
 
 ---
 

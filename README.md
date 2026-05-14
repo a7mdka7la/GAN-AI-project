@@ -19,14 +19,12 @@ masked at inference time so every emitted date is parseable and in
 
 ## Quick start (Google Colab)
 
-1. Push this repo to a private GitHub repo (assignment requirement).
-2. Open `notebooks/01_train_cgan.ipynb` (or any of the four training
-   notebooks) in Colab.
-3. Edit the `REPO_URL` in the first cell to point at your private repo.
-4. Run all cells with a GPU runtime — each model trains in ~5–15 min on a
+1. Open `notebooks/01_train_cgan.ipynb` (or any of the four training
+   notebooks) in Colab. The first cell clones this repo automatically.
+2. Run all cells with a GPU runtime — each model trains in ~5–15 min on a
    T4 and saves its best checkpoint to `runs/<model>/<model>_best.pt`,
    which the notebook then copies to `model/weights/<model>.pt`.
-5. After running all four training notebooks, open
+3. After running all four training notebooks, open
    `notebooks/05_eval_all.ipynb`, run it, and choose the best model — that
    becomes the default for `predict.py`.
 

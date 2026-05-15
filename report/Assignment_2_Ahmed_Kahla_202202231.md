@@ -116,18 +116,6 @@ joint compliance equals `acc_dow` — the day-of-week is the only learned term.
 ~2.0 for the others) is the expected signature of GAN mode-collapse on a small
 per-condition output space.
 
-### 4.2 Training curves
-
-*Loss-vs-step and validation joint-compliance-vs-epoch plots for each
-model are included in `report/figures/` and inserted here in the final
-PDF.*
-
-### 4.3 Selected outputs
-
-*Example outputs produced by `predict.py` on `data/example_input.txt`
-are listed here in the final PDF — a mix of well-formed and failure
-cases is selected for the discussion in §5.*
-
 ---
 
 ## 5. Analysis

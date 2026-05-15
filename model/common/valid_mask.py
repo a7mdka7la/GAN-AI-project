@@ -75,3 +75,44 @@ def any_valid(cond: Condition) -> bool:
     """True iff at least one (day, year_digit) pair satisfies the deterministic
     conditions. (All condition tuples in the real dataset should pass this.)"""
     return any(any(row) for row in full_valid_mask(cond))
+
+
+def compliance_matrix(cond: Condition) -> list[list[float]]:
+    """31x10 matrix; ``m[d][y] = 1.0`` iff (day=d+1, year_digit=y) yields a
+    valid, in-range date that satisfies ALL four conditions of ``cond`` —
+    including day-of-week. Used as an exact day-of-week oracle for the cGAN's
+    auxiliary compliance loss."""
+    out = [[0.0] * N_YEAR_DIGIT for _ in range(N_DAY)]
+    for y in range(N_YEAR_DIGIT):
+        year = cond.decade_int * 10 + y
+        if not (YEAR_MIN <= year <= YEAR_MAX):
+            continue
+        if is_leap(year) != bool(cond.leap):
+            continue
+        month_idx = cond.month + 1
+        days_in_month = calendar.monthrange(year, month_idx)[1]
+        for d in range(N_DAY):
+            if d >= days_in_month:
+                continue
+            # calendar.weekday: Monday=0 .. Sunday=6, matching our dow indices.
+            if calendar.weekday(year, month_idx, d + 1) == cond.dow:
+                out[d][y] = 1.0
+    return out
+
+
+def build_compliance_table() -> list[list[list[float]]]:
+    """Compliance matrices for every joint-condition id, indexed
+    ``table[joint_id][day][year_digit]``. Built once; the cGAN converts it to
+    a tensor and gathers per batch."""
+    from .format import N_JOINT_CONDITIONS, N_DECADES
+
+    table: list[list[list[float]]] = []
+    for jid in range(N_JOINT_CONDITIONS):
+        decade = jid % N_DECADES
+        rest = jid // N_DECADES
+        leap = rest % 2
+        rest //= 2
+        month = rest % 12
+        dow = rest // 12
+        table.append(compliance_matrix(Condition(dow=dow, month=month, leap=leap, decade=decade)))
+    return table

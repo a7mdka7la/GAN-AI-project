@@ -1,12 +1,23 @@
-"""Conditional VAE with two categorical decoder heads (day, year-digit)."""
+"""Conditional VAE with a FiLM-conditioned categorical decoder.
+
+The decoder is conditioned on the condition encoding at *every* layer (FiLM)
+rather than only by concatenation at the input, so it cannot ignore the
+condition and lean entirely on the latent. Combined with a free-bits KL
+objective (see ``train.py``) this keeps the latent compact enough that
+sampling ``z ~ N(0, I)`` at generation time stays on the decoder's
+in-distribution manifold.
+"""
 from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
+from ..common.blocks import FiLMMLP
 from ..common.condition_encoder import ConditionEncoder
 from ..common.tokenizer import N_DAY, N_YEAR_DIGIT
+
+X_DIM = N_DAY + N_YEAR_DIGIT  # 41
 
 
 class CVAE(nn.Module):
@@ -20,9 +31,9 @@ class CVAE(nn.Module):
         self.z_dim = z_dim
         self.cond_encoder = ConditionEncoder(dim=cond_dim)
 
-        # Encoder reads one-hot day + one-hot year-digit + condition.
+        # Encoder: (one-hot day, one-hot year-digit, condition) -> mu, logvar.
         self.encoder = nn.Sequential(
-            nn.Linear(N_DAY + N_YEAR_DIGIT + cond_dim, hidden),
+            nn.Linear(X_DIM + cond_dim, hidden),
             nn.GELU(),
             nn.Linear(hidden, hidden),
             nn.GELU(),
@@ -30,17 +41,11 @@ class CVAE(nn.Module):
         self.fc_mu = nn.Linear(hidden, z_dim)
         self.fc_logvar = nn.Linear(hidden, z_dim)
 
-        # Decoder maps (z, cond) -> two logit heads.
-        self.decoder = nn.Sequential(
-            nn.Linear(z_dim + cond_dim, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, hidden),
-            nn.GELU(),
+        # Decoder: FiLM-conditioned MLP from z to the two logit heads.
+        self.decoder = FiLMMLP(
+            in_dim=z_dim, cond_dim=cond_dim, hidden=hidden, out_dim=X_DIM, n_layers=4
         )
-        self.head_day = nn.Linear(hidden, N_DAY)
-        self.head_yd = nn.Linear(hidden, N_YEAR_DIGIT)
 
-    # ----- training-time forward ------------------------------------------
     def encode(
         self,
         day_idx: torch.Tensor,
@@ -58,8 +63,8 @@ class CVAE(nn.Module):
         return mu + eps * std
 
     def decode(self, z: torch.Tensor, cond: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        h = self.decoder(torch.cat([z, cond], dim=-1))
-        return self.head_day(h), self.head_yd(h)
+        out = self.decoder(z, cond)
+        return out[:, :N_DAY], out[:, N_DAY:]
 
     def forward(
         self,
@@ -81,7 +86,6 @@ class CVAE(nn.Module):
             "logvar": logvar,
         }
 
-    # ----- sampling-time forward ------------------------------------------
     @torch.no_grad()
     def sample_logits(
         self,

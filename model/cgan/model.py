@@ -1,12 +1,20 @@
-"""Conditional GAN (AC-GAN flavour) over (day, year-digit) categoricals.
+"""Conditional GAN over (day, year-digit) categoricals, with a projection
+discriminator (Miyato & Koyama, 2018).
 
-* Generator: ``z, c -> (logits_day, logits_yd)``. At training time we draw a
-  Gumbel-softmax sample for each head and pass *soft one-hots* into the
-  discriminator. At sampling time we apply the deterministic-condition mask
-  and draw a categorical.
-* Discriminator: ``(x_day, x_yd, c) -> real/fake + 4 auxiliary classifiers``.
-  The auxiliary heads (AC-GAN) force the generator to actually condition on
-  the inputs rather than producing arbitrary valid dates.
+* **Generator** ``z, c -> (day_logits, yd_logits)`` is FiLM-conditioned on the
+  condition encoding. Training feeds the discriminator Gumbel-softmax samples.
+* **Discriminator** is a *projection* critic:
+
+      D(x, c) = psi(phi(x)) + < y_c , phi(x) >
+
+  where ``phi`` is a spectral-normalised feature extractor over the date,
+  ``psi`` an unconditional critic head, and ``y_c`` a learned embedding of the
+  full condition tuple. The bilinear projection term lets the discriminator
+  memorise which dates are valid for each condition (a low-rank factorisation
+  of the condition x date validity matrix), so fooling it forces the
+  generator to respect *all* conditions — including day-of-week.
+
+Spectral normalisation + a hinge loss keep the adversarial game stable.
 """
 from __future__ import annotations
 
@@ -14,9 +22,12 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from ..common.blocks import FiLMMLP
 from ..common.condition_encoder import ConditionEncoder
-from ..common.format import N_DECADES
-from ..common.tokenizer import N_DAY, N_DOW, N_LEAP, N_MONTH, N_YEAR_DIGIT
+from ..common.format import N_JOINT_CONDITIONS, joint_condition_id
+from ..common.tokenizer import N_DAY, N_YEAR_DIGIT
+
+X_DIM = N_DAY + N_YEAR_DIGIT  # 41
 
 
 def gumbel_softmax(
@@ -25,33 +36,31 @@ def gumbel_softmax(
     generator: torch.Generator | None = None,
 ) -> torch.Tensor:
     """Differentiable soft one-hots. ``logits`` is ``[..., K]``."""
-    # Sample Gumbel noise: g = -log(-log(U)), U ~ Uniform(0,1).
-    # Written in two explicit steps: a one-liner is a precedence trap because
-    # the postfix .clamp_min() binds tighter than the unary minus.
     u = torch.empty_like(logits)
     u.uniform_(generator=generator) if generator is not None else u.uniform_()
-    neg_log_u = -torch.log(u.clamp_min(1e-9))          # in (0, ~20.7]
-    g = -torch.log(neg_log_u.clamp_min(1e-9))          # finite Gumbel sample
+    # g = -log(-log(u)); two explicit steps to avoid the precedence trap where
+    # postfix .clamp_min() would bind tighter than the unary minus.
+    neg_log_u = -torch.log(u.clamp_min(1e-9))
+    g = -torch.log(neg_log_u.clamp_min(1e-9))
     return F.softmax((logits + g) / max(1e-6, tau), dim=-1)
+
+
+def _sn(layer: nn.Linear) -> nn.Module:
+    """Spectral-normalise a linear layer (bounds the critic's Lipschitz
+    constant so it cannot overpower the generator)."""
+    return nn.utils.parametrizations.spectral_norm(layer)
 
 
 class Generator(nn.Module):
     """``z, c -> (logits_day [B,31], logits_yd [B,10])``."""
 
-    def __init__(self, z_dim: int = 64, cond_dim: int = 64, hidden: int = 256) -> None:
+    def __init__(self, z_dim: int = 64, cond_dim: int = 96, hidden: int = 384) -> None:
         super().__init__()
         self.z_dim = z_dim
         self.cond_encoder = ConditionEncoder(dim=cond_dim)
-        self.net = nn.Sequential(
-            nn.Linear(z_dim + cond_dim, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, hidden),
-            nn.GELU(),
+        self.net = FiLMMLP(
+            in_dim=z_dim, cond_dim=cond_dim, hidden=hidden, out_dim=X_DIM, n_layers=4
         )
-        self.head_day = nn.Linear(hidden, N_DAY)
-        self.head_yd = nn.Linear(hidden, N_YEAR_DIGIT)
 
     def sample_z(self, batch: int, device: torch.device) -> torch.Tensor:
         return torch.randn(batch, self.z_dim, device=device)
@@ -65,44 +74,27 @@ class Generator(nn.Module):
         decade: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         c = self.cond_encoder(dow, month, leap, decade)
-        h = self.net(torch.cat([z, c], dim=-1))
-        return self.head_day(h), self.head_yd(h)
-
-
-def _sn(layer: nn.Module) -> nn.Module:
-    """Wrap a Linear layer in spectral normalization.
-
-    Spectral norm bounds the largest singular value of the weight matrix to 1,
-    which keeps the discriminator 1-Lipschitz and prevents the exploding
-    gradients that turn the generator's weights into NaN within a few steps.
-    """
-    return nn.utils.parametrizations.spectral_norm(layer)
+        out = self.net(z, c)
+        return out[:, :N_DAY], out[:, N_DAY:]
 
 
 class Discriminator(nn.Module):
-    """``(x_day [B,31], x_yd [B,10], c) -> (rf [B], aux_dow, aux_mon, aux_leap, aux_dec)``.
+    """Projection critic: ``psi(phi(x)) + <y_c, phi(x)>``."""
 
-    Every Linear in the trunk + the real/fake head is spectral-normalised. The
-    auxiliary classification heads do NOT need spectral norm because they're
-    only optimised on real data — they don't feed back into the generator.
-    """
-
-    def __init__(self, cond_dim: int = 64, hidden: int = 256) -> None:
+    def __init__(self, hidden: int = 384) -> None:
         super().__init__()
-        self.cond_encoder = ConditionEncoder(dim=cond_dim)
-        self.trunk = nn.Sequential(
-            _sn(nn.Linear(N_DAY + N_YEAR_DIGIT + cond_dim, hidden)),
+        self.phi = nn.Sequential(
+            _sn(nn.Linear(X_DIM, hidden)),
             nn.LeakyReLU(0.2, inplace=True),
             _sn(nn.Linear(hidden, hidden)),
             nn.LeakyReLU(0.2, inplace=True),
             _sn(nn.Linear(hidden, hidden)),
             nn.LeakyReLU(0.2, inplace=True),
         )
-        self.head_rf = _sn(nn.Linear(hidden, 1))
-        self.head_dow = nn.Linear(hidden, N_DOW)
-        self.head_mon = nn.Linear(hidden, N_MONTH)
-        self.head_leap = nn.Linear(hidden, N_LEAP)
-        self.head_dec = nn.Linear(hidden, N_DECADES)
+        self.psi = _sn(nn.Linear(hidden, 1))
+        # Per-condition projection embedding y_c.
+        self.cond_proj = nn.Embedding(N_JOINT_CONDITIONS, hidden)
+        nn.init.zeros_(self.cond_proj.weight)
 
     def forward(
         self,
@@ -112,16 +104,12 @@ class Discriminator(nn.Module):
         month: torch.Tensor,
         leap: torch.Tensor,
         decade: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        c = self.cond_encoder(dow, month, leap, decade)
-        h = self.trunk(torch.cat([x_day, x_yd, c], dim=-1))
-        return (
-            self.head_rf(h).squeeze(-1),
-            self.head_dow(h),
-            self.head_mon(h),
-            self.head_leap(h),
-            self.head_dec(h),
-        )
+    ) -> torch.Tensor:
+        feat = self.phi(torch.cat([x_day, x_yd], dim=-1))
+        uncond = self.psi(feat).squeeze(-1)
+        joint = joint_condition_id(dow, month, leap, decade)
+        proj = (self.cond_proj(joint) * feat).sum(dim=-1)
+        return uncond + proj
 
 
 class CGAN(nn.Module):
@@ -130,7 +118,7 @@ class CGAN(nn.Module):
     def __init__(self, z_dim: int = 64, cond_dim: int = 96, hidden: int = 384) -> None:
         super().__init__()
         self.G = Generator(z_dim=z_dim, cond_dim=cond_dim, hidden=hidden)
-        self.D = Discriminator(cond_dim=cond_dim, hidden=hidden)
+        self.D = Discriminator(hidden=hidden)
 
     @torch.no_grad()
     def sample_logits(

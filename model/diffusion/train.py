@@ -88,7 +88,7 @@ def train(
             extra={"improved": improved},
         ))
         print(
-            f"[diffusion] ep {epoch:02d} mse={running/max(1,n_batches):.4f} "
+            f"[diffusion] ep {epoch:02d} ce={running/max(1,n_batches):.4f} "
             f"val_joint={val['val_joint_compliance']:.4f} val_dow={val['val_acc_dow']:.4f}"
             + (" *" if improved else "")
         )

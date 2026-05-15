@@ -35,8 +35,9 @@ def train(
     z_dim: int = 16,
     cond_dim: int = 96,
     hidden: int = 384,
-    beta_final: float = 0.1,
+    beta_final: float = 0.5,
     warmup_epochs: int = 5,
+    free_bits: float = 0.3,
     grad_clip: float = 1.0,
     val_n_samples: int = 4000,
     device: str = "cuda",
@@ -70,9 +71,17 @@ def train(
                 F.cross_entropy(out["logits_day"], batch["day"])
                 + F.cross_entropy(out["logits_yd"], batch["year_digit"])
             )
-            # KL(N(mu,sigma) || N(0,I))
-            kl = -0.5 * (1 + out["logvar"] - out["mu"].pow(2) - out["logvar"].exp()).sum(dim=-1).mean()
-            loss = nll + beta * kl
+            # Per-dimension KL(N(mu,sigma) || N(0,I)), averaged over the batch.
+            kl_per_dim = -0.5 * (
+                1 + out["logvar"] - out["mu"].pow(2) - out["logvar"].exp()
+            ).mean(dim=0)                                  # [z_dim]
+            kl = kl_per_dim.sum()
+            # Free bits: don't penalise the first `free_bits` nats per latent
+            # dimension. The latent keeps the information it needs (which valid
+            # date) without being pushed to collapse, and the penalty only bites
+            # on the excess that would pull the aggregate posterior off N(0,I).
+            kl_penalty = torch.clamp(kl_per_dim, min=free_bits).sum()
+            loss = nll + beta * kl_penalty
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)

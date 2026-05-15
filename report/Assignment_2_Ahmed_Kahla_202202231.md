@@ -48,21 +48,25 @@ one-hot day/year-digit) — no shared sequence representation needed.
 
 ## 2. Architectures
 
-All four models share the condition encoder (4 embeddings → 64-d vector)
-and the two output heads (day logits 31, year-digit logits 10). They
-differ only in how those logits are produced.
+All four models share the condition encoder — four factored embeddings
+(DOW/MON/LEAP/DEC) plus one joint-condition embedding fused into a 96-d
+vector — and the two output heads (day logits 31, year-digit logits 10).
+The joint embedding gives each `(dow,month,leap,decade)` tuple a dedicated
+learnable vector, which is what lets the models memorise the day-of-week
+function instead of trying to factor it across independent embeddings.
+The models differ only in how the logits are produced.
 
 | Model              | What is novel                                                                            | Params |
 |--------------------|-------------------------------------------------------------------------------------------|--------|
-| **cGAN (AC-GAN)**  | Generator+discriminator on Gumbel-softmax soft one-hots; D has 4 auxiliary classifiers (DOW/MON/LEAP/DEC) that supply the condition-enforcement gradient. | ~1.0 M |
-| **cVAE**           | Encoder over (one-hot day, one-hot year-digit, condition); 16-d latent; KL β-warmup 0→0.1 over 5 epochs to avoid posterior collapse on a tiny output space. | ~1.0 M |
-| **Transformer**    | 4-layer causal decoder, d_model=128, 4 heads, weight-tied head. Sequence `[BOS, DOW, MON, LEAP, DEC, day_tok, ydigit_tok]`, cross-entropy on the two output positions only. | ~0.4 M |
-| **Diffusion**      | DDPM on the 41-dim concatenated one-hot `[day(31)‖year_digit(10)]` with cosine β-schedule; classifier-free guidance (p_drop = 0.1, w = 2.0); DDIM 20-step sampler. | ~0.4 M |
+| **cGAN**           | Generator + projection-discriminator critic (Miyato & Koyama 2018) on Gumbel-softmax soft one-hots, spectral-normalised, hinge loss. The adversarial term alone cannot transmit the modular day-of-week constraint, so an auxiliary differentiable calendar-compliance loss rewards the generator's soft output for landing on fully-compliant `(day, year-digit)` cells. | ~4.6 M |
+| **cVAE**           | Encoder over (one-hot day, one-hot year-digit, condition); 16-d latent; free-bits KL (0.3-nat/dim floor, β annealed up to 0.5) to avoid posterior collapse on a tiny output space. | ~1.8 M |
+| **Transformer**    | 5-layer causal decoder, d_model=160, 4 heads, d_ff=384, weight-tied head. Joint-condition embedding added at every position; cross-entropy on the two output positions (year-digit then day) only. | ~2.3 M |
+| **Diffusion**      | Categorical diffusion on the 41-dim concatenated one-hot `[day(31)‖year_digit(10)]`; x0-prediction denoiser trained with cross-entropy; classifier-free guidance (p_drop = 0.1, w = 3.0); DDIM 20-step sampler. | ~1.6 M |
 
 The choice of *minimum heads* is what makes the GAN viable here — a vanilla
 sequence-token cGAN would have to backprop through a categorical sample,
 and on such a small joint space (≤ 310 cells per condition) mode-collapse
-is severe without the AC-GAN auxiliary signal.
+is severe without the auxiliary calendar-compliance signal.
 
 ---
 
@@ -99,10 +103,18 @@ which is the right framing for a generative task.
 
 | Model       | validity | acc_dow | acc_month | acc_leap | acc_decade | **joint** | diversity (nats) |
 |-------------|----------|---------|-----------|----------|------------|-----------|------------------|
-| cGAN        |          |         |           |          |            |           |                  |
-| cVAE        |          |         |           |          |            |           |                  |
-| Transformer |          |         |           |          |            |           |                  |
-| Diffusion   |          |         |           |          |            |           |                  |
+| cGAN        | 1.000    | 0.7188  | 1.000     | 1.000    | 1.000      | **0.7188** | 0.88            |
+| cVAE        | 1.000    | 0.7420  | 1.000     | 1.000    | 1.000      | **0.7420** | 2.12            |
+| Transformer | 1.000    | 0.3263  | 1.000     | 1.000    | 1.000      | **0.3263** | 2.03            |
+| Diffusion   | 1.000    | 0.9959  | 1.000     | 1.000    | 1.000      | **0.9959** | 2.02            |
+
+`acc_month`, `acc_leap` and `acc_decade` are exactly 1.000 because those three
+conditions are enforced deterministically by the sample-time validity mask, so
+joint compliance equals `acc_dow` — the day-of-week is the only learned term.
+**Conditional Diffusion is the strongest model** and is set as the default in
+`model/weights/active_model.txt`. The cGAN's low diversity entropy (0.88 vs
+~2.0 for the others) is the expected signature of GAN mode-collapse on a small
+per-condition output space.
 
 ### 4.2 Training curves
 
@@ -129,8 +141,13 @@ cases is selected for the discussion in §5.*
   year_digit) pair". For the dataset's size this lets all four models
   converge quickly on a single T4.
 
-* AC-GAN auxiliary heads. Without them, the cGAN ignores the
-  conditioning vector entirely and emits plausible-but-arbitrary dates.
+* Projection discriminator + calendar-compliance loss. The projection
+  critic supplies a per-condition validity gradient, and the differentiable
+  compliance loss supplies the exact day-of-week signal the adversarial game
+  alone cannot transmit. An earlier AC-GAN-style auxiliary day-of-week
+  classifier was tried first and failed — a learned classifier provably
+  cannot acquire the modular weekday function — so it was replaced by the
+  calendar as an exact oracle.
 
 ### Common failure modes
 
@@ -142,8 +159,9 @@ cases is selected for the discussion in §5.*
 
 * **Diffusion under-trains the year-digit head.** Because the year-digit
   one-hots are heavily constrained by decade+leap, the denoiser has very
-  little to learn and small noise can flip the argmax. CFG with w ≥ 2 was
-  needed to keep `acc_dow` high on the test split.
+  little to learn and small noise can flip the argmax. CFG with w = 3 was
+  needed to keep `acc_dow` high on the test split — and even so, Diffusion
+  is by a wide margin the best model (joint 0.996).
 
 ### Class imbalance
 
@@ -168,7 +186,9 @@ in `model/weights/active_model.txt`. The conda environment is pinned in
   the impossible last-digits but never see them in training, so
   generalisation is by definition guaranteed by the mask, not by the
   learned distribution.
-* The Transformer's sampling implementation reads year-digit logits
-  conditioned on the *argmax* day token rather than a sampled one. For a
+* The Transformer generates year-digit first and then the day token
+  conditioned on the *argmax* year-digit rather than a sampled one. For a
   joint of ≤ 310 cells per condition this is essentially equivalent, but
-  it does sacrifice a small amount of joint diversity.
+  it does sacrifice a small amount of joint diversity, and the Transformer
+  remains the weakest model (joint 0.33) — its loss plateaus before it
+  fully memorises the weekday function.

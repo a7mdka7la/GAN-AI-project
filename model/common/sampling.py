@@ -81,8 +81,12 @@ def _gumbel_max_sample(
     else:
         # generator on a different device (or None) — fall back to default RNG.
         u.uniform_()
-    # Two clamp_min(1e-9) calls keep both -log(u) and -log(-log(u)) finite.
-    g = -torch.log(-torch.log(u.clamp_min(1e-9)).clamp_min(1e-9))
+    # g = -log(-log(u)). Computed in two explicit steps: a one-liner is a
+    # precedence trap — the postfix .clamp_min() binds tighter than the unary
+    # minus, which would clamp log(u) (negative) up to 1e-9 and feed a
+    # negative number into the outer log, producing NaN.
+    neg_log_u = -torch.log(u.clamp_min(1e-9))          # in (0, ~20.7]
+    g = -torch.log(neg_log_u.clamp_min(1e-9))          # finite Gumbel sample
     return (logits + g).argmax(dim=-1)
 
 

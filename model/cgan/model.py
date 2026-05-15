@@ -25,10 +25,13 @@ def gumbel_softmax(
     generator: torch.Generator | None = None,
 ) -> torch.Tensor:
     """Differentiable soft one-hots. ``logits`` is ``[..., K]``."""
-    # Sample Gumbel noise: -log(-log(U)), U ~ Uniform(0,1)
+    # Sample Gumbel noise: g = -log(-log(U)), U ~ Uniform(0,1).
+    # Written in two explicit steps: a one-liner is a precedence trap because
+    # the postfix .clamp_min() binds tighter than the unary minus.
     u = torch.empty_like(logits)
     u.uniform_(generator=generator) if generator is not None else u.uniform_()
-    g = -torch.log(-torch.log(u.clamp_min(1e-9)).clamp_min(1e-9))
+    neg_log_u = -torch.log(u.clamp_min(1e-9))          # in (0, ~20.7]
+    g = -torch.log(neg_log_u.clamp_min(1e-9))          # finite Gumbel sample
     return F.softmax((logits + g) / max(1e-6, tau), dim=-1)
 
 

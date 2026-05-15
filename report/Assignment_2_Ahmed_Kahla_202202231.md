@@ -61,7 +61,7 @@ The models differ only in how the logits are produced.
 | **cGAN**           | Generator + projection-discriminator critic (Miyato & Koyama 2018) on Gumbel-softmax soft one-hots, spectral-normalised, hinge loss. The adversarial term alone cannot transmit the modular day-of-week constraint, so an auxiliary differentiable calendar-compliance loss rewards the generator's soft output for landing on fully-compliant `(day, year-digit)` cells. | ~4.6 M |
 | **cVAE**           | Encoder over (one-hot day, one-hot year-digit, condition); 16-d latent; free-bits KL (0.3-nat/dim floor, β annealed up to 0.5) to avoid posterior collapse on a tiny output space. | ~1.8 M |
 | **Transformer**    | 5-layer causal decoder, d_model=160, 4 heads, d_ff=384, weight-tied head. Joint-condition embedding added at every position; cross-entropy on the two output positions (year-digit then day) only. | ~2.3 M |
-| **Diffusion**      | Categorical diffusion on the 41-dim concatenated one-hot `[day(31)‖year_digit(10)]`; x0-prediction denoiser trained with cross-entropy; classifier-free guidance (p_drop = 0.1, w = 3.0); DDIM 20-step sampler. | ~1.6 M |
+| **Diffusion**      | Categorical diffusion on the 41-dim concatenated one-hot `[day(31)||year_digit(10)]`; x0-prediction denoiser trained with cross-entropy; classifier-free guidance (p_drop = 0.1, w = 3.0); DDIM 20-step sampler. | ~1.6 M |
 
 The choice of *minimum heads* is what makes the GAN viable here — a vanilla
 sequence-token cGAN would have to backprop through a categorical sample,

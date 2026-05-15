@@ -1,13 +1,18 @@
 """Tiny GPT-style conditional decoder.
 
 Input sequence (length 7):
-    [BOS, dow_tok, mon_tok, leap_tok, dec_tok, day_tok, ydigit_tok]
+    [BOS, dow_tok, mon_tok, leap_tok, dec_tok, ydigit_tok, day_tok]
 
-We compute logits over the *full* vocabulary at every position; the training
-loss only looks at the two output positions (predicting day_tok from index 5
-input and ydigit_tok from index 6 input — standard left-shift). At inference
-we feed the 5-token prompt, sample day_tok at position 5, append, then sample
-ydigit_tok at position 6.
+Year-digit is predicted before day (see ``ConditionTokenizer.encode_target``).
+On top of the per-token embeddings, a single joint-condition embedding —
+keyed on the full ``(dow, month, leap, decade)`` tuple — is added to every
+position, giving the autoregressive heads a sharp handle on which condition
+they are generating for.
+
+We compute logits over the full vocabulary at every position; the training
+loss only looks at the two output positions. At inference we feed the
+5-token prompt, sample ydigit_tok at position 5, append it, then sample
+day_tok at position 6.
 """
 from __future__ import annotations
 
@@ -16,7 +21,8 @@ import math
 import torch
 from torch import nn
 
-from ..common.tokenizer import ConditionTokenizer, N_DAY, N_YEAR_DIGIT
+from ..common.format import N_JOINT_CONDITIONS, joint_condition_id
+from ..common.tokenizer import ConditionTokenizer
 
 
 class CausalSelfAttention(nn.Module):
@@ -62,10 +68,10 @@ class Block(nn.Module):
 class ConditionalTransformer(nn.Module):
     def __init__(
         self,
-        d_model: int = 128,
+        d_model: int = 160,
         n_heads: int = 4,
-        n_layers: int = 4,
-        d_ff: int = 256,
+        n_layers: int = 5,
+        d_ff: int = 384,
         max_seq_len: int = 8,
         tokenizer: ConditionTokenizer | None = None,
     ) -> None:
@@ -73,6 +79,7 @@ class ConditionalTransformer(nn.Module):
         self.tok = tokenizer or ConditionTokenizer()
         self.token_emb = nn.Embedding(self.tok.ids.vocab_size, d_model)
         self.pos_emb = nn.Embedding(max_seq_len, d_model)
+        self.joint_emb = nn.Embedding(N_JOINT_CONDITIONS, d_model)
         self.blocks = nn.ModuleList(
             [Block(d_model, n_heads, d_ff) for _ in range(n_layers)]
         )
@@ -81,11 +88,23 @@ class ConditionalTransformer(nn.Module):
         # Tie head to embedding for parameter efficiency.
         self.head.weight = self.token_emb.weight
 
+    def _joint_from_prompt(self, x: torch.Tensor) -> torch.Tensor:
+        """Recover the joint-condition id from prompt tokens (positions 1-4)."""
+        ids = self.tok.ids
+        dow = x[:, 1] - ids.dow_start
+        month = x[:, 2] - ids.month_start
+        leap = x[:, 3] - ids.leap_start
+        decade = x[:, 4] - ids.decade_start
+        return joint_condition_id(dow, month, leap, decade)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """``x`` is ``[B, T]`` token ids. Returns ``[B, T, vocab]`` logits."""
+        """``x`` is ``[B, T]`` token ids (T >= 5). Returns ``[B, T, vocab]``."""
         B, T = x.shape
         pos = torch.arange(T, device=x.device)
         h = self.token_emb(x) + self.pos_emb(pos)[None]
+        # Add the joint-condition embedding to every position.
+        joint = self._joint_from_prompt(x)               # [B]
+        h = h + self.joint_emb(joint)[:, None, :]         # broadcast over T
         for blk in self.blocks:
             h = blk(h)
         h = self.ln(h)
@@ -96,32 +115,22 @@ class ConditionalTransformer(nn.Module):
         self,
         prompt: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Given a prompt of shape ``[B, 5]`` (BOS+4 cond tokens), produce
-        slimmed logits over (day, year-digit) value blocks.
+        """Given a prompt ``[B, 5]`` (BOS + 4 condition tokens), return
+        ``(day_logits [B,31], yd_logits [B,10])`` for the shared sampler.
 
-        Implementation strategy: feed prompt, read position-4 logits over
-        the day vocabulary block; greedily-but-temperature-sampled
-        intermediate day token is NOT chosen here — predict.py is responsible
-        for that. We return the two heads' restricted logit views so the
-        downstream sampler can mask + sample exactly like the other models.
-
-        Note that the second-step (year_digit) logits are conditioned on the
-        argmax of the day distribution, NOT a sampled day — to keep this
-        interface batched and parallel. For a small categorical with strong
-        decade prior this is a minor approximation; production-quality code
-        would sample autoregressively.
+        Year-digit is produced first from the prompt; the day logits are then
+        produced conditioned on the *argmax* year-digit. Because the shared
+        sampler later draws year-digit from a validity-masked distribution,
+        the day logits are conditioned on a near-certain (but not identical)
+        year-digit — a minor approximation for a small categorical.
         """
-        # 1) Run prompt through the model once.
-        logits = self.forward(prompt)  # [B, 5, V]
-        day_lo, day_hi = self.tok.day_token_range
+        logits = self.forward(prompt)                    # [B, 5, V]
         yd_lo, yd_hi = self.tok.year_digit_token_range
-        # Logits for day_tok come from the LAST prompt position (predicts next token).
-        day_logits = logits[:, -1, day_lo:day_hi]   # [B, 31]
-
-        # 2) Build the augmented sequence with the *argmax* day token, then
-        # read the year-digit logits at position 5.
-        argmax_day_tok = day_lo + day_logits.argmax(dim=-1, keepdim=True)  # [B, 1]
-        full = torch.cat([prompt, argmax_day_tok], dim=1)  # [B, 6]
+        day_lo, day_hi = self.tok.day_token_range
+        # Position 4 (last prompt token) predicts the year-digit token.
+        yd_logits = logits[:, -1, yd_lo:yd_hi]            # [B, 10]
+        argmax_yd_tok = yd_lo + yd_logits.argmax(dim=-1, keepdim=True)
+        full = torch.cat([prompt, argmax_yd_tok], dim=1)  # [B, 6]
         full_logits = self.forward(full)
-        yd_logits = full_logits[:, -1, yd_lo:yd_hi]  # [B, 10]
+        day_logits = full_logits[:, -1, day_lo:day_hi]    # [B, 31]
         return day_logits, yd_logits

@@ -13,9 +13,11 @@ sys.path.insert(0, str(ROOT))
 from model.common.format import (  # noqa: E402
     DAYS_OF_WEEK,
     MONTHS,
+    N_JOINT_CONDITIONS,
     Condition,
     format_output_line,
     is_leap,
+    joint_condition_id,
     parse_input_line,
 )
 from model.common.metrics import (  # noqa: E402
@@ -69,6 +71,20 @@ class FormatTests(unittest.TestCase):
         self.assertFalse(is_leap(1800))
 
 
+class JointConditionTests(unittest.TestCase):
+    def test_joint_id_unique_and_in_range(self) -> None:
+        seen: set[int] = set()
+        for dow in range(7):
+            for month in range(12):
+                for leap in range(2):
+                    for decade in range(41):
+                        jid = joint_condition_id(dow, month, leap, decade)
+                        self.assertTrue(0 <= jid < N_JOINT_CONDITIONS)
+                        seen.add(jid)
+        # Every distinct tuple must map to a distinct id.
+        self.assertEqual(len(seen), 7 * 12 * 2 * 41)
+
+
 class ValidMaskTests(unittest.TestCase):
     def test_decade_220_only_year_2200(self) -> None:
         # decade 220 -> only year 2200 in range [1800, 2200]
@@ -120,9 +136,10 @@ class TokenizerTests(unittest.TestCase):
 
     def test_target_roundtrip(self) -> None:
         tok = ConditionTokenizer()
+        # encode_target returns [ydigit_tok, day_tok] (year-digit first).
         target = tok.encode_target(day=15, year_digit=7)
-        self.assertEqual(tok.decode_day_token(target[0]), 15)
-        self.assertEqual(tok.decode_year_digit_token(target[1]), 7)
+        self.assertEqual(tok.decode_year_digit_token(target[0]), 7)
+        self.assertEqual(tok.decode_day_token(target[1]), 15)
 
     def test_target_out_of_range(self) -> None:
         tok = ConditionTokenizer()

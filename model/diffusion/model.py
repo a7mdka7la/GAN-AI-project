@@ -90,8 +90,8 @@ class CondDiffusion(nn.Module):
     def __init__(
         self,
         num_timesteps: int = 200,
-        cond_dim: int = 64,
-        hidden: int = 256,
+        cond_dim: int = 96,
+        hidden: int = 384,
         cond_dropout_p: float = 0.1,
         guidance_w: float = 2.0,
     ) -> None:

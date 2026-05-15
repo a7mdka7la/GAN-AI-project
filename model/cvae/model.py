@@ -13,8 +13,8 @@ class CVAE(nn.Module):
     def __init__(
         self,
         z_dim: int = 16,
-        cond_dim: int = 64,
-        hidden: int = 256,
+        cond_dim: int = 96,
+        hidden: int = 384,
     ) -> None:
         super().__init__()
         self.z_dim = z_dim

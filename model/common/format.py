@@ -28,6 +28,21 @@ DECADE_MIN: Final[int] = 180
 DECADE_MAX: Final[int] = 220
 N_DECADES: Final[int] = DECADE_MAX - DECADE_MIN + 1  # 41
 
+# A single integer id for the full (dow, month, leap, decade) condition tuple.
+# Models embed this directly so they get a sharp, memorisation-friendly handle
+# on each distinct condition rather than having to reconstruct the joint from
+# four separate embeddings.
+N_JOINT_CONDITIONS: Final[int] = 7 * 12 * 2 * N_DECADES  # 6888
+
+
+def joint_condition_id(dow, month, leap, decade):
+    """Map the 4 condition indices to one id in ``[0, N_JOINT_CONDITIONS)``.
+
+    Works on plain ints or on broadcastable integer tensors (the arithmetic is
+    elementwise), so it can be called inside a model's ``forward``.
+    """
+    return ((dow * 12 + month) * 2 + leap) * N_DECADES + decade
+
 
 @dataclass(frozen=True)
 class Condition:

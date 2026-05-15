@@ -127,7 +127,7 @@ class Discriminator(nn.Module):
 class CGAN(nn.Module):
     """Container holding G + D. Sampling interface used by ``predict.py``."""
 
-    def __init__(self, z_dim: int = 64, cond_dim: int = 64, hidden: int = 256) -> None:
+    def __init__(self, z_dim: int = 64, cond_dim: int = 96, hidden: int = 384) -> None:
         super().__init__()
         self.G = Generator(z_dim=z_dim, cond_dim=cond_dim, hidden=hidden)
         self.D = Discriminator(cond_dim=cond_dim, hidden=hidden)

@@ -23,13 +23,13 @@ def train(
     data_path: str,
     out_dir: str,
     *,
-    epochs: int = 30,
+    epochs: int = 60,
     batch_size: int = 1024,
-    lr: float = 3e-4,
-    d_model: int = 128,
+    lr: float = 5e-4,
+    d_model: int = 160,
     n_heads: int = 4,
-    n_layers: int = 4,
-    d_ff: int = 256,
+    n_layers: int = 5,
+    d_ff: int = 384,
     grad_clip: float = 1.0,
     val_n_samples: int = 4000,
     device: str = "cuda",
@@ -56,19 +56,18 @@ def train(
         running, n_batches = 0.0, 0
         for batch in train_loader:
             batch = {k: v.to(device_t) for k, v in batch.items()}
-            # Build [prompt(5) | day_tok | yd_tok] = 7-token sequence
+            # Build [prompt(5) | yd_tok | day_tok] = 7-token sequence.
             seq = torch.cat([batch["prompt"], batch["target"]], dim=1)  # [B, 7]
             logits = model(seq[:, :-1])  # predict positions 1..6 from inputs 0..5
-            # Targets are seq[:, 1:]. We only count loss at the last two positions
-            # (day_tok at output index 4, yd_tok at output index 5).
+            # The two supervised output positions: index 4 predicts seq[:, 5]
+            # (ydigit_tok), index 5 predicts seq[:, 6] (day_tok).
             day_lo, day_hi = tok.day_token_range
             yd_lo, yd_hi = tok.year_digit_token_range
-            # Position 4 of output predicts seq[:, 5] = day_tok; subset its logits to day vocab.
-            day_logits = logits[:, 4, day_lo:day_hi]
-            yd_logits = logits[:, 5, yd_lo:yd_hi]
+            yd_logits = logits[:, 4, yd_lo:yd_hi]
+            day_logits = logits[:, 5, day_lo:day_hi]
             loss = (
-                F.cross_entropy(day_logits, batch["day"])
-                + F.cross_entropy(yd_logits, batch["year_digit"])
+                F.cross_entropy(yd_logits, batch["year_digit"])
+                + F.cross_entropy(day_logits, batch["day"])
             )
             opt.zero_grad(set_to_none=True)
             loss.backward()

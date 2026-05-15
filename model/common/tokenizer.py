@@ -74,15 +74,18 @@ class ConditionTokenizer:
         ]
 
     def encode_target(self, day: int, year_digit: int) -> list[int]:
-        """Encode the two-token target ``[day_tok, ydigit_tok]``.
+        """Encode the two-token target ``[ydigit_tok, day_tok]``.
 
-        ``day`` is 1..31 and ``year_digit`` is 0..9.
+        Year-digit comes first: predicting it from the condition alone is the
+        easier sub-problem, and conditioning the day on an already-chosen year
+        means the model only has to place the day on the right weekday for a
+        known year. ``day`` is 1..31 and ``year_digit`` is 0..9.
         """
         if not 1 <= day <= 31:
             raise ValueError(f"day {day} out of range 1..31")
         if not 0 <= year_digit <= 9:
             raise ValueError(f"year_digit {year_digit} out of range 0..9")
-        return [self.ids.day_start + (day - 1), self.ids.year_digit_start + year_digit]
+        return [self.ids.year_digit_start + year_digit, self.ids.day_start + (day - 1)]
 
     def decode_day_token(self, tok: int) -> int:
         """Map a model-emitted day token id back to the integer 1..31."""

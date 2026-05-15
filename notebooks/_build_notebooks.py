@@ -58,13 +58,13 @@ print("files:", os.listdir(".")[:10])
 
 def training_cell(model_module: str) -> dict:
     return code(
-        f"""# Train.
+        f"""# Train. epochs/batch_size can be raised if you have Colab time budget.
 from {model_module}.train import train
 
 best_path = train(
     data_path="data/data.txt",
     out_dir="runs/{model_module.split('.')[-1]}",
-    epochs=30,
+    epochs=60,
     batch_size=1024,
     device="cuda",
     seed=42,
